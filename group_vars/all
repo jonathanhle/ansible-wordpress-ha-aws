@@ -1,0 +1,57 @@
+---
+# AWS SSH Key
+aws_ssh_key: ansible_for_aws_jonathan
+
+region: us-east-1
+
+# prefix for naming
+prefix: staging
+
+# availability zones
+az0: us-east-1a
+az1: us-east-1b
+
+vpc_cidr_block: 10.0.0.0/16
+vpc_cidr_subnet_public_0: 10.0.0.0/24
+vpc_cidr_subnet_private_0: 10.0.1.0/24
+vpc_cidr_subnet_public_1: 10.0.2.0/24
+vpc_cidr_subnet_private_1: 10.0.3.0/24
+
+ec2_instance_type: t2.micro
+ec2_instance_ami: ami-9a562df2
+
+#RDS Vars
+rds_subnet_group_name: dbsg2
+rds_subnet_group_description: "DB Subnet Group 1"
+
+rds_mysql_param_grp_name: mysqlpg1
+rds_mysql_param_grp_description: "MySQL Parameter Group 1"
+rds_mysql_param_grp_engine: mysql5.6
+rds_mysql_param_grp_innodb_timeout: 3600
+rds_mysql_param_grp_char_set: utf8
+
+rds_size: 100
+rds_instance_type: db.m1.small
+rds_db_engine: MySQL
+rds_engine_version: 5.6.22 
+rds_iops: 1000
+rds_db_name: wordpress
+rds_username: dbadmin
+rds_password: mypassword
+
+#ELB settings
+elb_purge_subnets: yes
+elb_cross_az_load_balancing: yes
+elb_connection_draining_timeout: 60
+elb_load_balancer_port: 80
+elb_instance_port: 80
+elb_ping_protocol: tcp
+elb_ping_port: 80
+elb_response_timeout: 5
+elb_interval: 30
+elb_unhealthy_threshold: 2
+elb_healthy_threshold: 10
+
+# WordPress settings
+
+

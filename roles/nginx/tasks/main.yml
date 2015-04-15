@@ -1,0 +1,11 @@
+---
+- name: add repos for nginx
+  # On Ubuntu target: add nginx stable repository from PPA and install its signing key.
+  # On Debian target: adding PPA is not available, so it will fail immediately.
+  apt_repository: repo='ppa:nginx/stable'
+
+- name: install nginx
+  apt: name=nginx state=present update_cache=yes
+
+- name: start nginx service
+  service: name=nginx state=started enabled=yes

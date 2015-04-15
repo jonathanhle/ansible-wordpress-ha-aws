@@ -1,0 +1,98 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+
+  tasks:
+    #Tasks to create RDS DB Subnet group.
+    - name: get vpc id information
+      command: "aws ec2 describe-vpcs --filters Name=tag:Name,Values={{ prefix }}_vpc" 
+      register: vpc_info
+      changed_when: False
+
+    - name: set vpc id json information into variable
+      set_fact: 
+        vpc_info_json: "{{ vpc_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws VPC id cli varables 
+      set_fact: 
+        VpcId: "{{ vpc_info_json.Vpcs[0].VpcId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: get vpc subnet ids for the private subnets
+      command: 'aws ec2 describe-subnets --filters "Name=vpc-id,Values={{ VpcId }}" "Name=tag:Name,Values={{ prefix }}_subnet_private_*"'
+      register: vpc_subnet_info
+      changed_when: False
+
+    - name: set vpc subnet id json information into variable
+      set_fact: 
+        vpc_subnet_info_json: "{{ vpc_subnet_info.stdout | from_json }}" 
+      changed_when: False
+
+    - name: setup subnet id cli varables 
+      set_fact: 
+        SubnetId_Priv0: "{{ vpc_subnet_info_json.Subnets[0].SubnetId }}"
+        SubnetId_Priv1: "{{ vpc_subnet_info_json.Subnets[1].SubnetId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: create Multi-AZ DB subnet group
+      local_action:
+        module: rds_subnet_group
+        name: "{{ rds_subnet_group_name }}"
+        state: present
+        region: "{{ region }}"
+        description: "{{ rds_subnet_group_description }}"
+        subnets:
+          - "{{ SubnetId_Priv0 }}"
+          - "{{ SubnetId_Priv1 }}"
+
+    #Task to create RDS mysql parameter group.
+    - name: create mysql parameter group
+      local_action:
+        module: rds_param_group
+        name: "{{ rds_mysql_param_grp_name }}"
+        state: present
+        region: "{{ region }}"
+        description: "{{ rds_mysql_param_grp_description }}"
+        engine: "{{ rds_mysql_param_grp_engine }}"
+        params:
+          innodb_lock_wait_timeout: 3600
+          character_set_database: utf8
+
+    #Tasks to create the RDS mysql database instance.
+    - name: get sg info for DB
+      command: 'aws ec2 describe-security-groups --filters "Name=group-name,Values={{ prefix }}_sg_database"'
+      register: sg_db_info
+      changed_when: False
+
+    - name: set sg info json information into variable
+      set_fact: 
+        sg_db_info_json: "{{ sg_db_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws VPC id cli varables 
+      set_fact: 
+        db_security_group_id: "{{ sg_db_info_json.SecurityGroups[0].GroupId }}"
+      when: sg_db_info_json.SecurityGroups[0].GroupId is defined
+
+    - name: create mysql RDS instance
+      local_action:
+        module: rds
+        command: create
+        instance_name: "{{ prefix }}-mysql-1"
+        region: "{{ region }}"
+        size: "{{ rds_size }}"
+        instance_type: "{{ rds_instance_type }}"
+        db_engine: "{{ rds_db_engine }}"
+        engine_version: "{{ rds_engine_version }}"
+        subnet: "{{ rds_subnet_group_name }}"
+        parameter_group: "{{ rds_mysql_param_grp_name }}"
+        multi_zone: yes
+        db_name: "{{ rds_db_name }}"
+        username: "{{ rds_username }}"
+        password: "{{ rds_password }}"
+        vpc_security_groups: "{{ db_security_group_id }}"
+        iops: "{{ rds_iops }}"
+        wait: yes
+        wait_timeout: 1800

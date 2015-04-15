@@ -1,0 +1,13 @@
+---
+# master playbook
+
+# provision AWS resources
+- include: 01_provision_vpc.yml
+- include: 02_provision_sg.yml
+- include: 03_provision_nat.yml
+- include: 04_provision_rds.yml
+- include: 05_provision_web.yml
+- include: 06_provision_elb.yml
+
+# configure web servers
+- include: web.yml

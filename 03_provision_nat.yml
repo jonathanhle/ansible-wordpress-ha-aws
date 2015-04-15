@@ -1,0 +1,90 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  
+  vars:
+    #AWS Nat Image ID
+    image: ami-184dc970
+  
+  tasks:
+    - name: get vpc id information
+      command: "aws ec2 describe-vpcs --filters Name=tag:Name,Values={{ prefix }}_vpc" 
+      register: vpc_info
+      changed_when: False
+
+    - name: set vpc id json information into variable
+      set_fact: 
+        vpc_info_json: "{{ vpc_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws VPC id cli varables 
+      set_fact: 
+        VpcId: "{{ vpc_info_json.Vpcs[0].VpcId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: get vpc subnet id for the first public subnet
+      command: 'aws ec2 describe-subnets --filters "Name=vpc-id,Values={{ VpcId }}" "Name=tag:Name,Values={{ prefix }}_subnet_public_0"'
+      register: vpc_subnet_info
+      changed_when: False
+
+    - name: set vpc subnet id json information into variable
+      set_fact: 
+        vpc_subnet_info_json: "{{ vpc_subnet_info.stdout | from_json }}" 
+      changed_when: False
+
+    - name: setup subnet id cli varables 
+      set_fact: 
+        SubnetId: "{{ vpc_subnet_info_json.Subnets[0].SubnetId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: get vpc route tables ID for main table
+      command: 'aws ec2 describe-route-tables --filters "Name=vpc-id,Values={{ VpcId }}" "Name=association.main,Values=true"'
+      register: vpc_main_route_table_info
+      changed_when: False
+
+    - name: set vpc route tables json information into variable
+      set_fact: 
+        vpc_main_route_table_info_json: "{{ vpc_main_route_table_info.stdout | from_json }}" 
+      changed_when: False
+
+    - name: setup route tables cli varables 
+      set_fact: 
+        RouteTableId: "{{ vpc_main_route_table_info_json.RouteTables[0].Associations[0].RouteTableId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: NAT instance provisioning
+      local_action:
+        module: ec2
+        region: "{{ region }}"
+        key_name: "{{ aws_ssh_key }}"
+        instance_type: "{{ ec2_instance_type }}"
+        image: "{{ image }}"
+        wait: yes
+        group: "{{ prefix }}_sg_nat"
+        instance_tags:
+          Name: "{{ prefix }}_nat"
+          class: nat
+          environment: staging
+        exact_count: 1
+        count_tag:
+          Name: "{{ prefix }}_nat"
+        vpc_subnet_id: "{{ SubnetId }}"
+        source_dest_check: no
+        wait: yes
+      register: ec2
+  
+    - name: associate new EIP for the instance
+      tags: eip
+      local_action:
+        module: ec2_eip
+        region: "{{ region }}"
+        instance_id: "{{ item.id }}"
+        wait_timeout: 60
+      with_items: ec2.instances
+      when: item.id is defined
+
+    - name: create NAT route on main route table
+      command: "aws ec2 create-route --route-table-id {{ RouteTableId }} --destination-cidr-block 0.0.0.0/0 --instance-id {{ item.id }}"  
+      with_items: ec2.instances
+      

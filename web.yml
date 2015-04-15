@@ -1,0 +1,72 @@
+---
+# web servers
+
+# determine web server instances
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  
+  tasks:
+    - name: get host information for webserver instances
+      command: 'aws ec2 describe-instances --filters "Name=tag:Name,Values={{ prefix }}-webserver*" "Name=instance-state-name,Values=running"'
+      register: webserver_info
+      changed_when: False
+
+    - name: set host json information into variable
+      set_fact: 
+        webserver_info_json: "{{ webserver_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup webserver info to cli varables
+      set_fact: 
+        PublicIP0: "{{ webserver_info_json.Reservations[0].Instances[0].NetworkInterfaces[0].Association.PublicIp }}"
+        PublicIP1: "{{ webserver_info_json.Reservations[1].Instances[0].NetworkInterfaces[0].Association.PublicIp }}"
+      when: webserver_info_json.Reservations[0].Instances[0] is defined
+
+    - name: Add new host to our inventory.
+      add_host:
+        name: "{{ PublicIP0 }}"
+        groups: webservers_wp
+      when: webserver_info_json.Reservations[0].Instances[0].NetworkInterfaces[0].Association.PublicIp is defined
+
+    - name: Add new host to our inventory.
+      add_host:
+        name: "{{ PublicIP1 }}"
+        groups: webservers_wp
+      when: webserver_info_json.Reservations[1].Instances[0].NetworkInterfaces[0].Association.PublicIp is defined
+
+# configure web server instances
+- hosts: webservers_wp
+  gather_facts: no
+  remote_user: ubuntu
+  sudo: yes
+
+  pre_tasks:
+    - name: Wait for port 22 to become available.
+      local_action: "wait_for port=22 host={{ inventory_hostname }}"
+
+    - name: ping all hosts
+      ping: 
+
+  # install packages
+  roles:
+    - nginx
+    - hhvm
+    - php-fpm
+    - wordpress
+
+# join web server instances to elb
+- hosts: localhost
+  connection: local
+  gather_facts: no
+
+  roles:
+    - elb
+  
+  tasks:
+    - name: get elb information
+      command: "aws elb describe-load-balancers --load-balancer-name {{ prefix }}-webserver-elb --query 'LoadBalancerDescriptions[0].DNSName'"
+      register: elb_info
+      changed_when: False
+
+    - debug: var=elb_info

@@ -1,0 +1,76 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  
+  tasks:
+    - name: get vpc id information
+      command: "aws ec2 describe-vpcs --filters Name=tag:Name,Values={{ prefix }}_vpc" 
+      register: vpc_info
+      changed_when: False
+
+    - name: set vpc id json information into variable
+      set_fact: 
+        vpc_info_json: "{{ vpc_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws VPC id cli varables 
+      set_fact: 
+        VpcId: "{{ vpc_info_json.Vpcs[0].VpcId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: get vpc subnet id for the both public Subnets
+      command: 'aws ec2 describe-subnets --filters "Name=vpc-id,Values={{ VpcId }}" "Name=tag:Name,Values={{ prefix }}_subnet_public_*"'
+      register: vpc_subnet_info
+      changed_when: False
+
+    - name: set vpc subnet id json information into variable
+      set_fact: 
+        vpc_subnet_info_json: "{{ vpc_subnet_info.stdout | from_json }}" 
+      changed_when: False
+
+    - name: setup subnet id cli varables 
+      set_fact: 
+        SubnetId0: "{{ vpc_subnet_info_json.Subnets[0].SubnetId }}"
+        SubnetId1: "{{ vpc_subnet_info_json.Subnets[1].SubnetId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: get sg info for DB
+      command: 'aws ec2 describe-security-groups --filters "Name=group-name,Values={{ prefix }}_sg_web"'
+      register: sg_web_info
+      changed_when: False
+
+    - name: set sg info json information into variable
+      set_fact: 
+        sg_web_info_json: "{{ sg_web_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws VPC id cli varables 
+      set_fact: 
+        web_security_group_id: "{{ sg_web_info_json.SecurityGroups[0].GroupId }}"
+      when: sg_web_info_json.SecurityGroups[0].GroupId is defined
+
+    # Creates a ELB and assigns a list of public subnets for the web server groups
+    - local_action:
+        module: ec2_elb_lb
+        state: present
+        name: "{{ prefix }}-webserver-elb"
+        security_group_ids: "{{ web_security_group_id }}"
+        region: "{{ region }}"
+        subnets:
+          - "{{ SubnetId0 }}"
+          - "{{ SubnetId1 }}"
+        purge_subnets: "{{ elb_purge_subnets }}"
+        cross_az_load_balancing: "{{ elb_cross_az_load_balancing }}"
+        connection_draining_timeout: "{{ elb_connection_draining_timeout }}"
+        listeners:
+          - protocol: http
+            load_balancer_port: "{{ elb_load_balancer_port }}"
+            instance_port: "{{ elb_instance_port }}"
+        health_check:
+          ping_protocol: "{{ elb_ping_protocol }}"
+          ping_port: "{{ elb_ping_port }}"
+          response_timeout: "{{ elb_response_timeout }}"
+          interval: "{{ elb_interval }}"
+          unhealthy_threshold: "{{ elb_unhealthy_threshold }}"
+          healthy_threshold: "{{ elb_healthy_threshold }}"

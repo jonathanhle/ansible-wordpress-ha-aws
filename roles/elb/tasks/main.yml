@@ -1,0 +1,34 @@
+---  
+- name: get host information for webserver instances
+  command: 'aws ec2 describe-instances --filters "Name=tag:Name,Values={{ prefix }}-webserver*" "Name=instance-state-name,Values=running"'
+  register: webserver_info
+  changed_when: False
+  environment:
+    AWS_DEFAULT_REGION: "{{ region }}"
+
+- name: set host json information into variable
+  set_fact: 
+    webserver_info_json: "{{ webserver_info.stdout | from_json }}"
+  changed_when: False
+
+- name: setup webserver info to cli varables - instance_id
+  set_fact: 
+    InstanceId0: "{{ webserver_info_json.Reservations[0].Instances[0].InstanceId }}"
+    InstanceId1: "{{ webserver_info_json.Reservations[1].Instances[0].InstanceId }}"
+  when: webserver_info_json.Reservations[0].Instances[0] is defined
+
+- name: Instance Register 00
+  local_action:
+    module: ec2_elb
+    instance_id: "{{ InstanceId0 }}"
+    ec2_elbs: "{{ prefix }}-webserver-elb"
+    region: "{{ region }}"
+    state: 'present'
+
+- name: Instance Register 01
+  local_action:
+    module: ec2_elb
+    instance_id: "{{ InstanceId1 }}"
+    ec2_elbs: "{{ prefix }}-webserver-elb"
+    region: "{{ region }}"
+    state: 'present'

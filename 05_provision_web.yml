@@ -1,0 +1,76 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+
+  tasks:
+    - name: get vpc id information
+      command: "aws ec2 describe-vpcs --filters Name=tag:Name,Values={{ prefix }}_vpc" 
+      register: vpc_info
+      changed_when: False
+
+    - name: set vpc id json information into variable
+      set_fact: 
+        vpc_info_json: "{{ vpc_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws VPC id cli varables 
+      set_fact: 
+        VpcId: "{{ vpc_info_json.Vpcs[0].VpcId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: get vpc subnet id for the both public Subnets
+      command: 'aws ec2 describe-subnets --filters "Name=vpc-id,Values={{ VpcId }}" "Name=tag:Name,Values={{ prefix }}_subnet_public_*"'
+      register: vpc_subnet_info
+      changed_when: False
+
+    - name: set vpc subnet id json information into variable
+      set_fact: 
+        vpc_subnet_info_json: "{{ vpc_subnet_info.stdout | from_json }}" 
+      changed_when: False
+
+    - name: setup subnet id cli varables 
+      set_fact: 
+        SubnetId0: "{{ vpc_subnet_info_json.Subnets[0].SubnetId }}"
+        SubnetId1: "{{ vpc_subnet_info_json.Subnets[1].SubnetId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: launch ec2 with tags webserver staging 01
+      local_action:
+        module: ec2
+        region: "{{ region }}"
+        key_name: "{{ aws_ssh_key }}"
+        instance_type: "{{ ec2_instance_type }}"
+        image: "{{ ec2_instance_ami }}"
+        wait: yes
+        group: "{{ prefix }}_sg_web"
+        instance_tags:
+          Name: "{{ prefix }}-webserver-01"
+          class: webserver
+          environment: "{{ prefix }}"
+        exact_count: 1
+        count_tag:
+          Name: "{{ prefix }}-webserver-01"
+        vpc_subnet_id: "{{ SubnetId0 }}"
+        assign_public_ip: yes
+        wait: yes
+
+    - name: launch ec2 with tags webserver staging 02
+      local_action:
+        module: ec2
+        region: "{{ region }}"
+        key_name: "{{ aws_ssh_key }}"
+        instance_type: "{{ ec2_instance_type }}"
+        image: "{{ ec2_instance_ami }}"
+        wait: yes
+        group: "{{ prefix }}_sg_web"
+        instance_tags:
+          Name: "{{ prefix }}-webserver-02"
+          class: webserver
+          environment: "{{ prefix }}"
+        exact_count: 1
+        count_tag:
+          Name: "{{ prefix }}-webserver-02"
+        vpc_subnet_id: "{{ SubnetId1 }}"
+        assign_public_ip: yes
+        wait: yes

@@ -1,0 +1,100 @@
+---
+- name: Download Wordpress
+  get_url: url=http://wordpress.org/latest.tar.gz dest=/tmp/wp-latest.tar.gz
+
+- name: Extract archive
+  command: /bin/tar xvf /tmp/wp-latest.tar.gz -C /srv/
+
+- name: Add group "wordpress"
+  group: name=wordpress
+
+- name: Add user "wordpress"
+  user: name=wordpress group=wordpress home=/srv/wordpress/
+
+- name: Change ownership of Wordpress installation
+  file: path=/srv/wordpress/ owner=wordpress group=wordpress state=directory recurse=yes
+
+- name: Modify default nginx site for wordpress - PHP files
+  replace:
+    dest: "/etc/nginx/sites-available/default"
+    regexp: '^\tindex index.html index.htm index.nginx-debian.html;'
+    replace: '        index index.html index.htm index.php;'
+  notify: restart nginx
+
+- name: Modify default nginx site for wordpress - localhost
+  replace:
+    dest: "/etc/nginx/sites-available/default"
+    regexp: '^\tserver_name _;'
+    replace: '        server_name localhost;'
+  notify: restart nginx
+
+- name: Modify default nginx site for wordpress - location stanza section
+  replace:
+    dest: "/etc/nginx/sites-available/default"
+    regexp: '^\t\ttry_files \$uri \$uri\/ =404;'
+    replace: '        try_files $uri $uri/ /index.php?q=$uri&$args;'
+  notify: restart nginx
+
+- name: Modify default nginx site for wordpress - wordpress site location
+  replace:
+    dest: "/etc/nginx/sites-available/default"
+    regexp: '^\troot \/var\/www\/html;'
+    replace: '        root /srv/wordpress/;'
+  notify: restart nginx
+
+- name: Fetch random salts for WordPress config
+  local_action: command curl https://api.wordpress.org/secret-key/1.1/salt/
+  register: "wp_salt"
+  sudo: no
+
+- name: Check if the config already exists
+  stat: path=/srv/wordpress/wp-config.php
+  register: wpconfigdone_stat
+
+- name: /srv/wordpress/wp-config-sample.php to /srv/wordpress/wp-config.php
+  command: cp -p /srv/wordpress/wp-config-sample.php /srv/wordpress/wp-config.php
+  when: wpconfigdone_stat.stat.exists == False
+
+- name: Modify Wordpress config file - delete line
+  lineinfile:
+    dest: "/srv/wordpress/wp-config.php"
+    regexp: '.*define.*(SECURE_AUTH_KEY|LOGGED_IN_KEY|NONCE_KEY|AUTH_SALT|SECURE_AUTH_SALT|LOGGED_IN_SALT|NONCE_SALT).*put your unique phrase here.*'
+    state: absent
+
+- name: Modify Wordpress config file - insert new WP Salts
+  replace:
+    dest: "/srv/wordpress/wp-config.php"
+    regexp: 'define..AUTH_KEY.*put your unique phrase here.*'
+    replace: "{{ wp_salt.stdout }}"
+
+- name: Modify Wordpress config file - db_name
+  replace:
+    dest: "/srv/wordpress/wp-config.php"
+    regexp: 'database_name_here'
+    replace: "{{ rds_db_name }}"
+
+- name: Modify Wordpress config file - db_user
+  replace:
+    dest: "/srv/wordpress/wp-config.php"
+    regexp: 'username_here'
+    replace: "{{ rds_username }}"
+
+- name: Modify Wordpress config file - db_password
+  replace:
+    dest: "/srv/wordpress/wp-config.php"
+    regexp: 'password_here'
+    replace: "{{ rds_password }}"
+
+- name: Get RDS instance info
+  command: "aws rds describe-db-instances --db-instance-identifier {{ prefix }}-mysql-1 --query 'DBInstances[0].Endpoint.Address' --output text"
+  connection: local
+  register: rds_instance_info
+  changed_when: False
+  environment:
+    AWS_DEFAULT_REGION: "{{ region }}"
+
+- name: Modify Wordpress config file - db_host
+  replace:
+    dest: "/srv/wordpress/wp-config.php"
+    regexp: 'localhost'
+    replace: "{{ rds_instance_info.stdout }}"

@@ -1,0 +1,139 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+
+  tasks:
+    - name: get current ip for AWS
+      uri: url=http://checkip.amazonaws.com/ 
+           return_content=yes 
+           method=GET 
+      register: checkip
+
+    - name: get vpc information
+      command: "aws ec2 describe-vpcs --filters Name=tag:Name,Values={{ prefix }}_vpc" 
+      register: vpc_info
+      changed_when: False
+
+    - name: set vpc json information into variable
+      set_fact: 
+        vpc_info_json: "{{ vpc_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws cli varables 
+      set_fact: 
+        VpcId: "{{ vpc_info_json.Vpcs[0].VpcId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: security group for jump box instance
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        #your security group name
+        name: "{{ prefix }}_sg_jumpbox"
+        description: security group for jump box
+        rules:
+          # allow ssh access from your ip address
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "{{ checkip.content | regex_replace('\n', '/32') }}"
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+
+    - name: security group for sg_web rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        #your security group name
+        name: "{{ prefix }}_sg_web"
+        description: security group for webservers
+        rules:
+          # allow ssh access from your ip address
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "{{ checkip.content | regex_replace('\n', '/32') }}"
+          # allow ssh from the jump box
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            group_name: "{{ prefix }}_sg_jumpbox"
+          # allow http access from anywhere
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+          # allow https access from anywhere
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: tcp
+            from_port: 0
+            to_port: 65535
+            cidr_ip: 0.0.0.0/0
+
+    - name: security group for sg_database rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        name: "{{ prefix }}_sg_database"
+        description: security group for databases
+        rules:
+          # allow ssh from the jump box
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            group_name: "{{ prefix }}_sg_jumpbox"
+          - proto: tcp
+            from_port: 3306
+            to_port: 3306
+            group_name: "{{ prefix }}_sg_web"
+        rules_egress:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+
+    - name: security group for sg_nat rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        name: "{{ prefix }}_sg_nat"
+        description: security group for nat
+        rules:
+          # allow ssh access from your ip address
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "{{ checkip.content | regex_replace('\n', '/32') }}"
+          # allow http access from private subnet
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: "{{ vpc_cidr_subnet_private_0 }}"
+          # allow https access from private subnet
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: "{{ vpc_cidr_subnet_private_0 }}"
+        rules_egress:
+        - proto: tcp
+          from_port: 80
+          to_port: 80
+          cidr_ip: 0.0.0.0/0
+        - proto: tcp
+          from_port: 443
+          to_port: 443
+          cidr_ip: 0.0.0.0/0
