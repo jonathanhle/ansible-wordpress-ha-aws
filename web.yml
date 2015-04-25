@@ -43,6 +43,7 @@
 
   pre_tasks:
     - name: Wait for port 22 to become available.
+      sudo: no
       local_action: "wait_for port=22 host={{ inventory_hostname }}"
 
     - name: ping all hosts
