@@ -86,6 +86,7 @@
     replace: "{{ rds_password }}"
 
 - name: Get RDS instance info
+  sudo: false
   command: "aws rds describe-db-instances --db-instance-identifier {{ prefix }}-mysql-1 --query 'DBInstances[0].Endpoint.Address' --output text"
   connection: local
   register: rds_instance_info
