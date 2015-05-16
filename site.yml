@@ -11,3 +11,4 @@
 
 # configure web servers
 - include: web.yml
+- include: autoscaling.yml

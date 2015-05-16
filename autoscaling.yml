@@ -1,0 +1,162 @@
+---
+# web servers
+
+# determine web server instance ID to setup an AMI snapshot
+- hosts: localhost
+  connection: local
+  gather_facts: no
+  
+  tasks:
+    # Get the ID of the first server, so we can AMI it
+    - name: get instance id for first web server
+      command: 'aws ec2 describe-instances --filters "Name=tag:Name,Values={{ prefix }}-webserver*" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text'
+      register: webserver_instance_id
+      changed_when: False
+
+    - name: get elb information
+      command: "aws elb describe-load-balancers --load-balancer-name staging-webserver-elb --query 'LoadBalancerDescriptions[0].DNSName' --output text"
+      register: elb_info
+      changed_when: False
+
+    - name: get sg info for web group
+      command: 'aws ec2 describe-security-groups --filters "Name=group-name,Values=staging_sg_web" --query "SecurityGroups[0].GroupId" --output text'
+      register: sg_web_info
+      changed_when: False
+
+    # Get subnets
+    - name: get vpc id information
+      command: "aws ec2 describe-vpcs --filters Name=tag:Name,Values={{ prefix }}_vpc" 
+      register: vpc_info
+      changed_when: False
+
+    - name: set vpc id json information into variable
+      set_fact: 
+        vpc_info_json: "{{ vpc_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws VPC id cli varables 
+      set_fact: 
+        VpcId: "{{ vpc_info_json.Vpcs[0].VpcId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: get vpc subnet  id for the both public Subnets
+      command: 'aws ec2 describe-subnets --filters "Name=vpc-id,Values={{ VpcId }}" "Name=tag:Name,Values={{ prefix }}_subnet_public_*"'
+      register: vpc_subnet_info
+      changed_when: False
+
+    - name: set vpc subnet id json information into variable
+      set_fact: 
+        vpc_subnet_info_json: "{{ vpc_subnet_info.stdout | from_json }}" 
+      changed_when: False
+
+    - name: setup subnet id cli varables 
+      set_fact: 
+        SubnetId0: "{{ vpc_subnet_info_json.Subnets[0].SubnetId }}"
+        SubnetId1: "{{ vpc_subnet_info_json.Subnets[1].SubnetId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    # Basic AMI Creation
+    - ec2_ami:
+        region: "{{ region }}"
+        instance_id: "{{ webserver_instance_id.stdout }}"
+        wait: yes
+        name: "{{ prefix }}-webserver-ami"
+        tags:
+          Name: "{{ prefix }}-webserver-ami"
+          Service: WebApp
+      register: instance_ami
+
+    #Create Launch Configuration
+    - ec2_lc:
+        region: "{{ region }}"
+        name: "{{ prefix }}-WebApp-LC1"
+        image_id: "{{ instance_ami.image_id }}"
+        key_name: "{{ aws_ssh_key }}"
+        security_groups: [ "{{ sg_web_info.stdout }}" ]
+        instance_type: t2.micro
+        instance_monitoring: yes
+        assign_public_ip: yes
+        state: present
+
+    # Create Autoscaling Group
+    - ec2_asg:
+        region: "{{ region }}"
+        name: "{{ prefix }}-WebApp"
+        load_balancers: [ "{{ prefix }}-webserver-elb" ]
+        availability_zones: [ "{{ az0 }}", "{{ az1}}" ]
+        launch_config_name: "{{ prefix }}-WebApp-LC1"
+        min_size: 1
+        max_size: 10
+        desired_capacity: 3
+        vpc_zone_identifier: [ "{{ SubnetId0 }}", "{{ SubnetId1 }}" ]
+        wait_for_instances: True
+        tags:
+          - environment: production
+            propagate_at_launch: no
+
+    # Create Autoscaling Policies (borrowd from https://github.com/ansible/autoscaling-blog/blob/master/roles/infra/tasks/main.yml)
+    - name: create scale down policy
+      ec2_scaling_policy:
+        state: present
+        region: "{{ region }}"
+        name: "scale-down-policy-{{ prefix }}"
+        adjustment_type: ChangeInCapacity
+        asg_name: "{{ prefix }}-WebApp"
+        scaling_adjustment: -1
+        min_adjustment_step: -1
+        cooldown: 300
+      register: scale_down_policy
+      tags: scaling_policy
+
+    - name: create scale up policy
+      ec2_scaling_policy:
+        state: present
+        region: "{{ region }}"
+        name: "scale-up-policy-{{ prefix }}"
+        adjustment_type: ChangeInCapacity
+        asg_name: "{{ prefix }}-WebApp"
+        scaling_adjustment: 1
+        min_adjustment_step: 1
+        cooldown: 300
+      register: scale_up_policy
+      tags: scaling_policy
+
+    - name: create scale down alarm
+      ec2_metric_alarm:
+        state: present
+        region: "{{ region }}"
+        name: "cpu-low"
+        metric: CPUUtilization
+        namespace: "AWS/EC2"
+        statistic: Average
+        comparison: "<="
+        threshold: 5.0
+        period: 300
+        evaluation_periods: 3
+        unit: "Percent"
+        description: "This will alarm when cpu usage average is lower than 5% for 15 minutes "
+        dimensions: 
+          AutoScalingGroupName: "{{ prefix }}-WebApp"
+        alarm_actions: 
+        - "{{ scale_down_policy.arn }}"
+      tags: alarm
+
+    - name: create scale up alarm
+      ec2_metric_alarm:
+        state: present
+        region: "{{ region }}"
+        name: "cpu-high"
+        metric: CPUUtilization
+        namespace: "AWS/EC2"
+        statistic: Average
+        comparison: ">="
+        threshold: 1.0
+        period: 300
+        evaluation_periods: 1
+        unit: "Percent"
+        description: "This will alarm when cpu usage average is higher than 1% for 5 minutes "
+        dimensions: 
+          AutoScalingGroupName: "{{ prefix }}-WebApp"
+        alarm_actions: 
+          - "{{ scale_up_policy.arn }}"
+      tags: alarm

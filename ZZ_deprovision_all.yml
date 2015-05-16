@@ -1,0 +1,210 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: no
+
+  tasks:
+    # Delete RDS Database
+    - name: Delete mysql RDS instance
+      local_action:
+        region: "{{ region }}"
+        module: rds
+        command: delete
+        instance_name: "{{ prefix }}-mysql-1"
+        wait: yes
+        wait_timeout: 3600
+
+    # Delete RDS Parameter Group
+    - name: Delete mysql parameter group
+      local_action:
+        module: rds_param_group
+        name: "{{ rds_mysql_param_grp_name }}"
+        state: absent
+        region: "{{ region }}"
+
+    # Delete RDS Subnet Group
+    - name: Delete Multi-AZ DB subnet group
+      local_action:
+        module: rds_subnet_group
+        name: "{{ rds_subnet_group_name }}"
+        state: absent
+        region: "{{ region }}"
+
+    # Delete Autoscaling Group
+    - name: Delete Autoscaling group
+      local_action:
+        module: ec2_asg
+        region: "{{ region }}"
+        name: "{{ prefix }}-WebApp"
+        state: absent
+
+    # Delete Autoscaling Launch Configuration
+    - name: Delete Autoscaling Launch Configuration
+      ec2_lc:
+        region: "{{ region }}"
+        name: "{{ prefix }}-WebApp-LC1"
+        state: absent
+
+    # Delete Autoscaling AMI
+    - name: Find image_id of AMI to Delete
+      ec2_ami_find:
+        region: "{{ region }}"
+        owner: self
+        ami_tags:
+          Name: "{{ prefix }}-webserver-ami"
+          Service: WebApp
+        no_result_action: success
+      register: ami_find
+
+    - debug: var=ami_find
+
+    - name: Delete Autoscaling AMI
+      ec2_ami:
+        region: "{{ region }}"
+        image_id: "{{ ami_find.results[0].ami_id }}"
+        state: absent
+      when: ami_find.results|length > 0
+
+    # Delete Instances
+    - name: get instance id for environment instances to terminate
+      command: 'aws ec2 describe-instances --query "Reservations[].Instances[].InstanceId" --filters "Name=tag:Name,Values={{ prefix }}*" "Name=instance-state-name,Values=running"'
+      register: webserver_instance_ids
+      changed_when: False
+
+    - name: set host json information into variable
+      set_fact: 
+        webserver_instance_ids_info_json: "{{ webserver_instance_ids.stdout | from_json }}"
+      when: "'i' in webserver_instance_ids.stdout"
+
+    - name: Terminate ec2 Instances
+      local_action:
+        module: ec2
+        region: "{{ region }}"
+        instance_ids: "{{ item }}"
+        wait: yes
+        state: absent
+      with_items:
+        - "{{ webserver_instance_ids_info_json }}"
+      when: "'i' in webserver_instance_ids.stdout"
+
+    # Delete Elastic IPs
+    - name: get EIPs
+      command: 'aws ec2 describe-addresses --query "Addresses[].AllocationId[]" --output text'
+      register: EIPs
+      changed_when: False
+
+    - name: Release EIPs
+      command: "aws ec2 release-address --allocation-id {{ item }}"
+      with_items:
+        - "{{ EIPs.stdout_lines }}"
+      when: EIPs.stdout|length > 0
+
+    # Delete the ELB
+    - local_action:
+        region: "{{ region }}"
+        module: ec2_elb_lb
+        state: absent
+        name: "{{ prefix }}-webserver-elb"
+
+    # Empty SGs
+    - name: get vpc information
+      command: "aws ec2 describe-vpcs --filters Name=tag:Name,Values={{ prefix }}_vpc" 
+      register: vpc_info
+      changed_when: False
+
+    - name: set vpc json information into variable
+      set_fact: 
+        vpc_info_json: "{{ vpc_info.stdout | from_json }}"
+      changed_when: False
+
+    - name: setup aws cli varables 
+      set_fact: 
+        VpcId: "{{ vpc_info_json.Vpcs[0].VpcId }}"
+      when: vpc_info_json.Vpcs[0].VpcId is defined
+
+    - name: security group for jump box instance
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        #your security group name
+        name: "{{ prefix }}_sg_jumpbox"
+        description: security group for jump box
+
+    - name: security group for sg_web rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        #your security group name
+        name: "{{ prefix }}_sg_web"
+        description: security group for webservers
+
+    - name: security group for sg_database rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        name: "{{ prefix }}_sg_database"
+        description: security group for databases
+
+    - name: security group for sg_nat rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        name: "{{ prefix }}_sg_nat"
+        description: security group for nat
+
+    # Delete SGs
+    - name: security group for jump box instance
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        #your security group name
+        name: "{{ prefix }}_sg_jumpbox"
+        description: security group for jump box
+        state: absent
+
+    - name: security group for sg_web rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        #your security group name
+        name: "{{ prefix }}_sg_web"
+        description: security group for webservers
+        state: absent
+
+    - name: security group for sg_database rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        name: "{{ prefix }}_sg_database"
+        description: security group for databases
+        state: absent
+
+    - name: security group for sg_nat rules
+      local_action:
+        module: ec2_group
+        region: "{{ region }}"
+        vpc_id: "{{ VpcId }}"
+        name: "{{ prefix }}_sg_nat"
+        description: security group for nat
+        state: absent
+
+    # Delete VPC
+    - name: get vpc id information
+      command: "aws ec2 describe-vpcs --query 'Vpcs[].VpcId[]' --filters Name=tag:Name,Values=staging_vpc --output text" 
+      register: vpc_info
+      changed_when: False
+
+    - name: delete vpc with multi-az subnets
+      local_action:
+        module: ec2_vpc
+        state: absent
+        region: "{{ region }}"
+        vpc_id: "{{ vpc_info.stdout }}"
+        resource_tags: '{"Name":"{{ prefix }}_vpc"}'
